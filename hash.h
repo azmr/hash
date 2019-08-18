@@ -8,10 +8,13 @@
  *   - partial read/update via ptr/index
  * - version with/without iterable keys?
  *
+ * - Keep separate array segment(s) via predicate(s)
+ * - Only keep indexes into key/val arrays rather than duplicating key
  */
 
+#if 1 // MACROS
 #if !defined(MAP_TYPES)
-# error map, key and value types must be defined
+# error map, key and value types must be defined: #define MAP_TYPES (map_type_name, function_prefix, key_type, value_type)
 #endif
 
 #ifndef  MAP_API
@@ -19,11 +22,11 @@
 #endif /*MAP_API*/
 
 #ifndef  MAP_INVALID_VAL
-# define MAP_INVALID_VAL 0
+# define MAP_INVALID_VAL {0}
 #endif /*MAP_INVALID_VAL*/
 
 #ifndef  MAP_INVALID_KEY
-# define MAP_INVALID_KEY 0
+# define MAP_INVALID_KEY {0}
 #endif /*MAP_INVALID_KEY*/
 
 #ifndef  MAP_MIN_ELEMENTS
@@ -46,10 +49,11 @@
 #define MAP_CAT2(a,b) MAP_CAT1(a,b)
 #define MAP_CAT(a,b)  MAP_CAT2(a,b)
 
-#define Map    MAP_TYPES(MAP_TYPE)
-#define map_fn MAP_TYPES(MAP_FUNC)
-#define MapKey MAP_TYPES(MAP_KEY)
-#define MapVal MAP_TYPES(MAP_VAL)
+#define Map    MAP_CAT(MAP_TYPE, MAP_TYPES)
+#define map_fn MAP_CAT(MAP_FUNC, MAP_TYPES)
+#define MapKey MAP_CAT(MAP_KEY,  MAP_TYPES)
+#define MapVal MAP_CAT(MAP_VAL,  MAP_TYPES)
+
 #define MAP_DECORATE_TYPE(x) MAP_CAT(Map, x)
 #define MAP_DECORATE_FUNC(x) MAP_CAT(map_fn, _ ## x)
 
@@ -58,6 +62,7 @@
 #define Map_Invalid_Key MAP_DECORATE_TYPE(_Invalid_Key)
 #define Map_Invalid_Val MAP_DECORATE_TYPE(_Invalid_Val)
 
+// INTERNAL FUNCTIONS:
 #define map__hash           MAP_DECORATE_FUNC(_hash)
 #define map__slots          MAP_DECORATE_FUNC(_hashed_slots)
 #define map__hashed_keys    MAP_DECORATE_FUNC(_hashed_keys)
@@ -74,6 +79,8 @@
 #define map_insert          MAP_DECORATE_FUNC(insert)
 #define map_remove          MAP_DECORATE_FUNC(remove)
 #define map_resize          MAP_DECORATE_FUNC(resize)
+
+#endif // MACROS
 
 
 #include <stdint.h>
@@ -96,9 +103,22 @@ typedef struct MapSlots {
 typedef struct Map {
 	void   *slots;
 	MapKey *keys;
-	size_t keys_max; // always a power of 2; the size of the array is 2x this (allows super-quick mod_pow2)
-	size_t keys_n;
+	size_t  keys_max; // always a power of 2; the size of the array is 2x this (allows super-quick mod_pow2)
+	size_t  keys_n;
 } Map;
+
+#if 1 // CONSTANTS
+#ifndef MAP_CONSTANTS
+#define MAP_CONSTANTS
+
+typedef enum MapResult {
+    MAP_error   = -1,
+    MAP_absent  = 0,
+    MAP_present = 1,
+} MapResult;
+
+#endif // MAP_CONSTANTS
+#endif // CONSTANTS
 
 static inline MapKey   *map__hashed_keys(Map *map)
 { return (MapKey *) map->slots; }
@@ -153,7 +173,7 @@ MAP_API MapVal map_get(Map *map, MapKey key) {
 }
 
 // returns non-zero if map contains key
-MAP_API int map_has(Map *map, MapKey key) {
+MAP_API MapResult map_has(Map *map, MapKey key) {
 	uint64_t slot_i = map__probe_linear(map, key);
 	return map->keys_n && key == map__hashed_keys(map)[slot_i];
 }
@@ -174,7 +194,8 @@ MAP_API int map_resize(Map *map, uint64_t values_n)
 		   size_new          = linear_array_size + slots_size;
 
 	if (new.keys_max > old.keys_max) {
-		if (!(new.keys = malloc(size_new))) { goto end; }
+		new.keys = malloc(size_new);
+		if (! new.keys) { goto end; }
 		free(old.keys);
 	}
 	else if (new.keys_max < old.keys_max) {
@@ -215,12 +236,12 @@ end: return result;
 // -1 - isn't in map, couldn't allocate sufficient space
 //  0 - wasn't previously in map, successfully inserted
 //  1 - was already in map, successfully updated
-MAP_API int map_set(Map *map, MapKey key, MapVal val) {
+MAP_API MapResult map_set(Map *map, MapKey key, MapVal val) {
 	MapSlots slots	       = map__slots(map);
 	uint64_t slot_i        = map__probe_linear(map, key);
 	int key_already_in_map = map->keys_n && slots.keys[slot_i] == key,
 		sufficient_space   = 1;
-	map__assert(key_already_in_map || !map->keys_n || slots.keys[slot_i] == 0);
+	map__assert(key_already_in_map || !map->keys_n || slots.keys[slot_i] == Map_Invalid_Key);
 
 	if (! key_already_in_map  &&  (map->keys_n + 1) > map->keys_max)
 	{
@@ -240,12 +261,12 @@ MAP_API int map_set(Map *map, MapKey key, MapVal val) {
 // -1 - isn't in map, couldn't allocate sufficient space
 //  0 - wasn't previously in map, successfully inserted
 //  1 - was already in map
-MAP_API int map_insert(Map *map, MapKey key, MapVal val) {
+MAP_API MapResult map_insert(Map *map, MapKey key, MapVal val) {
 	MapSlots slots         = map__slots(map);
 	uint64_t slot_i        = map__probe_linear(map, key);
 	int key_already_in_map = map->keys_n && slots.keys[slot_i] == key,
 		sufficient_space   = 1;
-	map__assert(key_already_in_map || !map->keys_n || slots.keys[slot_i] == 0);
+	map__assert(key_already_in_map || !map->keys_n || slots.keys[slot_i] == Map_Invalid_Key);
 
 	if (! key_already_in_map)
 	{
@@ -265,20 +286,16 @@ MAP_API int map_insert(Map *map, MapKey key, MapVal val) {
 	return key_already_in_map ? key_already_in_map : -!sufficient_space;
 }
 
-//  0 - isn't in map, no change
-//  1 - was already in map, successfully updated
-MAP_API int map_update(Map *map, MapKey key, MapVal val) {
+//  MAP_absent  (0) - isn't in map, no change
+//  MAP_present (1) - was already in map, successfully updated
+MAP_API MapResult map_update(Map *map, MapKey key, MapVal val) {
 	MapSlots slots         = map__slots(map);
 	uint64_t slot_i        = map__probe_linear(map, key);
 	int key_already_in_map = map->keys_n && slots.keys[slot_i] == key;
-	map__assert(key_already_in_map || !map->keys_n || slots.keys[slot_i] == 0);
+	map__assert(key_already_in_map || !map->keys_n || slots.keys[slot_i] == Map_Invalid_Key);
 
-	if (key_already_in_map) {
-		slots.keys[slot_i]          = key;
-		map->keys[map->keys_n]      = key;
-		slots.entries[slot_i].key_i = map->keys_n++;
-		slots.entries[slot_i].val   = val;
-	}
+	if (key_already_in_map)
+	{   slots.entries[slot_i].val = val;   }
 
 	return key_already_in_map;
 }
@@ -391,8 +408,3 @@ MAP_API uint64_t map_clear(Map *map) {
 #undef MAP_CAT1
 #undef MAP_CAT2
 #undef MAP_CAT
-
-
-
-
-
