@@ -10,6 +10,8 @@
  *
  * - Keep separate array segment(s) via predicate(s)
  * - Only keep indexes into key/val arrays rather than duplicating key
+ *
+ * - multithreading without locks (CAS etc)
  */
 
 #if 1 // MACROS
@@ -40,10 +42,14 @@
 # define Map_Load_Factor 2
 #endif /*MAP_GENERIC*/
 
-#define MAP_TYPE(type, func, key, val) type
-#define MAP_FUNC(type, func, key, val) func
-#define MAP_KEY(type, func, key, val) key
-#define MAP_VAL(type, func, key, val) val
+#define MAP_TYPE(map_t, func_prefix, key_t, val_t) map_t
+#define MAP_FUNC(map_t, func_prefix, key_t, val_t) func_prefix
+#define MAP_KEY( map_t, func_prefix, key_t, val_t) key_t
+#define MAP_VAL( map_t, func_prefix, key_t, val_t) val_t
+
+#define MAP_MTX_TYPE(  mtx_t, lock_fn, unlock_fn) mtx_t
+#define MAP_MTX_LOCK(  mtx_t, lock_fn, unlock_fn) lock_fn
+#define MAP_MTX_UNLOCK(mtx_t, lock_fn, unlock_fn) unlock_fn
 
 #define MAP_CAT1(a,b) a ## b
 #define MAP_CAT2(a,b) MAP_CAT1(a,b)
@@ -56,6 +62,17 @@
 
 #define MAP_DECORATE_TYPE(x) MAP_CAT(Map, x)
 #define MAP_DECORATE_FUNC(x) MAP_CAT(map_fn, _ ## x)
+
+# define MapMtx MAP_CAT(MAP) 
+#ifdef MAP_MUTEX
+#define MAP_MTX    MAP_CAT(MAP_MTX_TYPE,   MAP_MUTEX) lock;
+#define MAP_LOCK   MAP_CAT(MAP_MTX_LOCK,   MAP_MUTEX)
+#define MAP_UNLOCK MAP_CAT(MAP_MTX_UNLOCK, MAP_MUTEX)
+#else // MAP_MUTEX
+#define MAP_MTX
+#define MAP_LOCK(x)
+#define MAP_UNLOCK(x)
+#endif//MAP_MUTEX
 
 #define MapEntry MAP_DECORATE_TYPE(Entry)
 #define MapSlots MAP_DECORATE_TYPE(Slots)
@@ -87,8 +104,8 @@
 #include <stdlib.h>
 #include <assert.h>
 
-static MapKey Map_Invalid_Key = MAP_INVALID_KEY;
-static MapVal Map_Invalid_Val = MAP_INVALID_VAL;
+static MapKey const Map_Invalid_Key = MAP_INVALID_KEY;
+static MapVal const Map_Invalid_Val = MAP_INVALID_VAL;
 
 typedef struct MapEntry {
 	MapVal   val;
@@ -105,6 +122,8 @@ typedef struct Map {
 	MapKey *keys;
 	size_t  keys_max; // always a power of 2; the size of the array is 2x this (allows super-quick mod_pow2)
 	size_t  keys_n;
+
+    MAP_MTX
 } Map;
 
 #if 1 // CONSTANTS
@@ -157,30 +176,38 @@ static uint64_t map__probe_linear(Map *map, MapKey key) {
 }
 
 MAP_API MapVal * map_ptr(Map *map, MapKey key) {
+    MAP_LOCK(&map->lock);
 	uint64_t slot_i = map__probe_linear(map, key);
+	MapVal *result = 0;
 	if (map->keys_n && key == map__hashed_keys(map)[slot_i])
-	{ return &map__hashed_entries(map)[slot_i].val; }
-	else
-	{ return 0; }
+	{   result =  &map__hashed_entries(map)[slot_i].val;   }
+    MAP_UNLOCK(&map->lock);
+    return result;
 }
 
 MAP_API MapVal map_get(Map *map, MapKey key) {
+    MAP_LOCK(&map->lock);
 	uint64_t slot_i = map__probe_linear(map, key);
+	MapVal result = Map_Invalid_Val;
 	if (map->keys_n && key == map__hashed_keys(map)[slot_i])
-	{ return map__hashed_entries(map)[slot_i].val; }
-	else
-	{ return Map_Invalid_Val; }
+	{   result =  map__hashed_entries(map)[slot_i].val;   }
+    MAP_UNLOCK(&map->lock);
+    return result;
 }
 
 // returns non-zero if map contains key
 MAP_API MapResult map_has(Map *map, MapKey key) {
+    MAP_LOCK(&map->lock);
 	uint64_t slot_i = map__probe_linear(map, key);
-	return map->keys_n && key == map__hashed_keys(map)[slot_i];
+    MapResult result = map->keys_n && key == map__hashed_keys(map)[slot_i];
+    MAP_UNLOCK(&map->lock);
+	return result;
 }
 
 // returns non-zero on success
 MAP_API int map_resize(Map *map, uint64_t values_n)
 {
+    MAP_LOCK(&map->lock);
 	int result = 0;
 	Map old = *map, new = old;
 
@@ -229,7 +256,9 @@ MAP_API int map_resize(Map *map, uint64_t values_n)
 
 	*map = new;
 
-end: return result;
+end:
+    MAP_UNLOCK(&map->lock);
+    return result;
 }
 
 
@@ -237,6 +266,7 @@ end: return result;
 //  0 - wasn't previously in map, successfully inserted
 //  1 - was already in map, successfully updated
 MAP_API MapResult map_set(Map *map, MapKey key, MapVal val) {
+    MAP_LOCK(&map->lock);
 	MapSlots slots	       = map__slots(map);
 	uint64_t slot_i        = map__probe_linear(map, key);
 	int key_already_in_map = map->keys_n && slots.keys[slot_i] == key,
@@ -255,13 +285,16 @@ MAP_API MapResult map_set(Map *map, MapKey key, MapVal val) {
 	slots.entries[slot_i].key_i = map->keys_n++;
 	slots.entries[slot_i].val   = val;
 
-	return key_already_in_map ? key_already_in_map : -!sufficient_space;
+	MapResult result = key_already_in_map ? key_already_in_map : -!sufficient_space;
+    MAP_UNLOCK(&map->lock);
+    return result;
 }
 
 // -1 - isn't in map, couldn't allocate sufficient space
 //  0 - wasn't previously in map, successfully inserted
 //  1 - was already in map
 MAP_API MapResult map_insert(Map *map, MapKey key, MapVal val) {
+    MAP_LOCK(&map->lock);
 	MapSlots slots         = map__slots(map);
 	uint64_t slot_i        = map__probe_linear(map, key);
 	int key_already_in_map = map->keys_n && slots.keys[slot_i] == key,
@@ -283,12 +316,15 @@ MAP_API MapResult map_insert(Map *map, MapKey key, MapVal val) {
 		slots.entries[slot_i].val   = val;
 	}
 
-	return key_already_in_map ? key_already_in_map : -!sufficient_space;
+	MapResult result = key_already_in_map ? key_already_in_map : -!sufficient_space;
+    MAP_UNLOCK(&map->lock);
+    return result;
 }
 
 //  MAP_absent  (0) - isn't in map, no change
 //  MAP_present (1) - was already in map, successfully updated
 MAP_API MapResult map_update(Map *map, MapKey key, MapVal val) {
+    MAP_LOCK(&map->lock);
 	MapSlots slots         = map__slots(map);
 	uint64_t slot_i        = map__probe_linear(map, key);
 	int key_already_in_map = map->keys_n && slots.keys[slot_i] == key;
@@ -297,6 +333,7 @@ MAP_API MapResult map_update(Map *map, MapKey key, MapVal val) {
 	if (key_already_in_map)
 	{   slots.entries[slot_i].val = val;   }
 
+    MAP_UNLOCK(&map->lock);
 	return key_already_in_map;
 }
 
@@ -319,6 +356,7 @@ MAP_API MapResult map_update(Map *map, MapKey key, MapVal val) {
  */
 MAP_API MapVal map_remove(Map *map, MapKey key)
 {
+    MAP_LOCK(&map->lock);
 	MapSlots slots      = map__slots(map);
 	uint64_t slot_empty = map__probe_linear(map, key);
 	int key_is_in_map   = map->keys_n && slots.keys[slot_empty] == key;
@@ -355,16 +393,20 @@ MAP_API MapVal map_remove(Map *map, MapKey key)
 		}
 	}
 
-end: return result;
+end:
+    MAP_UNLOCK(&map->lock);
+    return result;
 }
 
 MAP_API uint64_t map_clear(Map *map) {
+    MAP_LOCK(&map->lock);
 	MapSlots slots = map__slots(map);
 	uint64_t slots_n = Map_Load_Factor * map->keys_max,
 			 keys_n = map->keys_n;
 	for(uint64_t i = 0; i < map->keys_n; map->keys[i++] = Map_Invalid_Key);
 	for(uint64_t i = 0; i < slots_n;    slots.keys[i++] = Map_Invalid_Key);
 	map->keys_n = 0;
+    MAP_UNLOCK(&map->lock);
 	return keys_n;
 }
 
@@ -387,6 +429,14 @@ MAP_API uint64_t map_clear(Map *map) {
 #undef MapSlots
 #undef Map_Invalid_Key
 #undef Map_Invalid_Val
+ 
+#undef MAP_MTX_TYPE
+#undef MAP_MTX_LOCK
+#undef MAP_MTX_UNLOCK
+
+#undef MAP_MTX
+#undef MAP_LOCK
+#undef MAP_UNLOCK
 
 #undef map__hash
 #undef map__slots
@@ -403,7 +453,9 @@ MAP_API uint64_t map_clear(Map *map) {
 #undef map_insert
 #undef map_remove
 #undef map_resize
+
 #undef MAP_TYPES
+#undef MAP_MUTEX
 
 #undef MAP_CAT1
 #undef MAP_CAT2
