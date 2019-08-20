@@ -1,13 +1,10 @@
-#define MAP_TYPES(T) T(MyMap, map, void *, void *)
+#define MAP_TYPES (MyMap, map, void *, void *)
 #include "hash.h"
 #define MAP_INVALID_VAL -1
-#define MAP_TYPES(T) T(MapStrInt, map_s_i, char *, int)
+#define MAP_TYPES (MapStrInt, map_s_i, char *, int)
 #include "hash.h"
  
 #include <stdio.h>
-#define STB_SPRINTF_IMPLEMENTATION
-#define STB_SPRINTF_DECORATE(x) s##x
-#include "../azmr-h-ext/stb/stb_sprintf.h"
 
 void put_str(char *s)
 {
@@ -34,17 +31,17 @@ int main()
 		}
 		int *my_age = map_get(&map, names[0]);
 		if (my_age) {
-			ssnprintf(buf, sizeof buf, "age: %d\n", *my_age);
+			snprintf(buf, sizeof buf, "age: %d\n", *my_age);
 			put_str(buf);
 		}
 
-		ssnprintf(buf, sizeof buf, "First name: %s, age: %d\n", names[0], *(int*)map_remove(&map, names[0]));
+		snprintf(buf, sizeof buf, "First name: %s, age: %d\n", names[0], *(int*)map_remove(&map, names[0]));
 		put_str(buf);
 
 		for(int i = 0; i < map.keys_n; ++i) {
 			char *name = map.keys[i];
 			int  *age  = map_get(&map, name); // bug in code if this is null
-			ssnprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, *age);
+			snprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, *age);
 			put_str(buf);
 		}
 	}
@@ -67,17 +64,17 @@ int main()
 		}
 		int my_age = map_s_i_get(&map, names[0]);
 		if (my_age != -1) {
-			ssnprintf(buf, sizeof buf, "age: %d\n", my_age);
+			snprintf(buf, sizeof buf, "age: %d\n", my_age);
 			put_str(buf);
 		}
 
-		ssnprintf(buf, sizeof buf, "First name: %s, age: %d\n", names[0], map_s_i_remove(&map, names[0]));
+		snprintf(buf, sizeof buf, "First name: %s, age: %d\n", names[0], map_s_i_remove(&map, names[0]));
 		put_str(buf);
 
 		for(int i = 0; i < map.keys_n; ++i) {
 			char *name = map.keys[i];
 			int  age  = map_s_i_get(&map, name); // bug in code if this is null
-			ssnprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, age);
+			snprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, age);
 			put_str(buf);
 		}
 	}
