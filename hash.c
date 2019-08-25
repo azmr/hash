@@ -38,7 +38,7 @@ int main()
 		snprintf(buf, sizeof buf, "First name: %s, age: %d\n", names[0], *(int*)map_remove(&map, names[0]));
 		put_str(buf);
 
-		for(int i = 0; i < map.keys_n; ++i) {
+		for(int i = 0; i < map.n; ++i) {
 			char *name = map.keys[i];
 			int  *age  = map_get(&map, name); // bug in code if this is null
 			snprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, *age);
@@ -71,7 +71,7 @@ int main()
 		snprintf(buf, sizeof buf, "First name: %s, age: %d\n", names[0], map_s_i_remove(&map, names[0]));
 		put_str(buf);
 
-		for(int i = 0; i < map.keys_n; ++i) {
+		for(int i = 0; i < map.n; ++i) {
 			char *name = map.keys[i];
 			int  age  = map_s_i_get(&map, name); // bug in code if this is null
 			snprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, age);
