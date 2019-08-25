@@ -88,18 +88,26 @@
 #define map__key_i           MAP_DECORATE_FUNC(_key_i)
 #define map__make_room_for   MAP_DECORATE_FUNC(_make_room_for)
 #define map__hashed_entries  MAP_DECORATE_FUNC(_hashed_entries)
+#define map__test_invariants MAP_DECORATE_FUNC(_test_invariants)
 
 // USER FUNCTIONS:
-#define map_has             MAP_DECORATE_FUNC(has)
-#define map_ptr             MAP_DECORATE_FUNC(ptr)
-#define map_get             MAP_DECORATE_FUNC(get)
-#define map_set             MAP_DECORATE_FUNC(set)
-#define map_clear           MAP_DECORATE_FUNC(clear)
-#define map_update          MAP_DECORATE_FUNC(update)
-#define map_insert          MAP_DECORATE_FUNC(insert)
-#define map_remove          MAP_DECORATE_FUNC(remove)
-#define map_resize          MAP_DECORATE_FUNC(resize)
+#define map_has    MAP_DECORATE_FUNC(has)
+#define map_ptr    MAP_DECORATE_FUNC(ptr)
+#define map_get    MAP_DECORATE_FUNC(get)
+#define map_set    MAP_DECORATE_FUNC(set)
+#define map_clear  MAP_DECORATE_FUNC(clear)
+#define map_update MAP_DECORATE_FUNC(update)
+#define map_insert MAP_DECORATE_FUNC(insert)
+#define map_remove MAP_DECORATE_FUNC(remove)
+#define map_resize MAP_DECORATE_FUNC(resize)
 #endif // FUNCTIONS
+
+#ifdef MAP_TEST
+static void map__test_invariants(Map *map);
+# define MAP_TEST_INVARIANTS(map) map__test_invariants(map);
+#else
+# define MAP_TEST_INVARIANTS(map)
+#endif/*MAP_TEST*/
 
 #if 1 // USER CONSTANTS
 
@@ -209,6 +217,7 @@ MAP_API MapVal * map_ptr(Map *map, MapKey key)
 	MapIdx  key_i  = map__key_i(map, key);
 	MapVal *result = (~key_i) ? &map->vals[key_i]
 	                          : 0;
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -220,6 +229,7 @@ MAP_API MapVal map_get(Map *map, MapKey key)
 	MapIdx key_i  = map__key_i(map, key);
 	MapVal result = (~key_i) ? map->vals[key_i]
 	                         : Map_Invalid_Val;
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -231,6 +241,7 @@ MAP_API MapResult map_has(Map *map, MapKey key)
     MAP_LOCK(&map->lock);
 	MapIdx    key_i = map__key_i(map, key);
     MapResult result = !!(~key_i);
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
 	return result;
 }
@@ -281,6 +292,7 @@ MAP_API int map_resize(Map *map, uint64_t values_n)
 	*map = new;
 
 end:
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -333,6 +345,7 @@ MAP_API MapResult map_set(Map *map, MapKey key, MapVal val)
     if (result != MAP_error)
     {   map->vals[idx] = val;   }
 
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -349,6 +362,7 @@ MAP_API MapResult map_insert(Map *map, MapKey key, MapVal val)
     if (result == MAP_absent)
     {   map->vals[idx] = val;   }
 
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -366,6 +380,7 @@ MAP_API MapResult map_update(Map *map, MapKey key, MapVal val)
 	if (result == MAP_present)
 	{   map->vals[idx] = val;   }
 
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -430,8 +445,9 @@ MAP_API MapVal map_remove(Map *map, MapKey key)
         // NOTE: adding idxs_n to keep positive, primarily to avoid oddities with mod
                d_from_ideal_to_empty = map__mod_pow2((idxs_n + empty_idx_i - ideal_idx_i), idxs_n),
                d_from_ideal_to_check = map__mod_pow2((idxs_n + check_idx_i - ideal_idx_i), idxs_n);
-        int was_bumped = d_from_ideal_to_empty < d_from_ideal_to_check; // half open and may be more than 1 different as explained above
-        if (was_bumped)
+
+        int space_closer_to_hash_i_is_now_available = d_from_ideal_to_empty < d_from_ideal_to_check; // half open and may be more than 1 different as explained above
+        if (space_closer_to_hash_i_is_now_available)
         { // move element from check idx to empty idx
             MapIdx test_idx = map__idx_i(map, key);
             map__assert(empty_idx_i == test_idx &&
@@ -442,10 +458,10 @@ MAP_API MapVal map_remove(Map *map, MapKey key)
             // check idx is now empty, so subsequent checks will be against that
             empty_idx_i = check_idx_i;
         }
-	
 	}
 
 end:
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -459,9 +475,69 @@ MAP_API uint64_t map_clear(Map *map)
     map->n = 0;
 	for (MapIdx i = 0; i < idxs_n; ++i)
 	{   map->idxs[i] = ~(MapIdx)0;   }
+    MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
 	return n;
 }
+
+#if 1 // INVARIANTS
+#ifdef MAP_TEST
+# ifndef MAP_TEST_CONSTANTS
+# define MAP_TEST_CONSTANTS
+typedef enum MapInvariant {
+    MAP_INV_no_errors,
+    MAP_INV_one_of_each_index = 1,
+    MAP_INV_index_invalid_or_less_than_max,
+} MapInvariant;
+
+#  define MAP_MAX(a, b) ((a) > (b) ? (a) : (b))
+# endif//MAP_TEST_CONSTANTS
+
+static MapInvariant MAP_DECORATE_FUNC(_inv_idxs_check)(Map *map, void *scratch_mem)
+{
+    unsigned char *idxs_already_hit = (unsigned char *)scratch_mem;
+    MapIdx idxs_n = Map_Load_Factor * map->max;
+    for (MapIdx i = 0; i < idxs_n; ++i)
+    {
+        MapIdx idx = map->idxs[i];
+        if (~idx)
+        {
+            if (idx >= n)
+            {   return MAP_INV_index_invalid_or_less_than_max;   }
+
+            else if (idxs_already_hit[idx]++)
+            {   return MAP_INV_one_of_each_index;   }
+        }
+    }
+
+    return MAP_INV_no_errors;
+}
+
+static void map__test_invariants(Map *map)
+{
+    MapIdx idxs_size = sizeof(MapIdx) * Map_Load_Factor * map->max,
+           vals_size = sizeof(MapVal) * map->n,
+           keys_size = sizeof(MapKey) * map->n,
+           max_size  = MAP_MAX(MAP_MAX(idxs_size, vals_size), keys_size);
+
+    void *scratch_mem = malloc(max_size);
+
+    void (*map__invariants)(Map *map)[] = {
+        MAP_DECORATE_FUNC(_inv_idxs_check),
+    };
+
+    for (size_t i = 0; i < sizeof(map__invariants)/sizeof(*map__invariants); ++i)
+    {
+        memset(scratch_mem, 0, max_size);
+        MapInvariant err = map__invariants[i](map, scratch_mem);
+        map__assert(! err && "Invariant violated");
+    }
+
+    free(scratch_mem);
+}
+
+#endif//MAP_TEST
+#endif // INVARIANTS
 
 #if 1 // UNDEFS
 #undef MAP_INVALID_KEY
@@ -491,12 +567,14 @@ MAP_API uint64_t map_clear(Map *map)
 #undef MAP_MTX
 #undef MAP_LOCK
 #undef MAP_UNLOCK
+#undef MAP_TEST_INVARIANTS
 
 #undef map__hash
 #undef map__slots
 #undef map__hashed_keys
 #undef map__key_i
 #undef map__hashed_entries
+#undef map__test_invariants
 
 // USER FUNCTIONS:
 #undef map_has
