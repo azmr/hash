@@ -8,6 +8,7 @@
  *   - partial read/update via ptr/index
  *
  * - user definable key equality
+ * - multi-part keys
  *
  * - Keep separate array segment(s) via predicate(s)
  * - Only keep indexes into key/val arrays rather than duplicating key
@@ -26,7 +27,7 @@
 # define MAP_API static
 #endif /*MAP_API*/
 
-#ifndef  MAP_GENERIC
+#ifndef  MAP_GENERIC // only intended to be defined once total
 # define MAP_GENERIC
 # define map__mod_pow2(a, x) ((a) & (x - 1))
 # define map__assert(e) assert(e)
@@ -43,6 +44,10 @@
 #if 1 // USER TYPES
 #define MapEntry MAP_DECORATE_TYPE(Entry)
 #define MapSlots MAP_DECORATE_TYPE(Slots)
+
+#ifndef MAP_KEY_EQ
+# define MAP_KEY_EQ(key_a, key_b) key_a == key_b
+#endif//MAP_KEY_EQ
 
 #if 1 // BASIC TYPES
 #define MAP_TYPE(map_t, func_prefix, key_t, val_t) map_t
@@ -158,24 +163,25 @@ typedef enum MapResult {
 #endif // MAP_CONSTANTS
 #endif // CONSTANTS
 
+#ifndef MAP_HASH_KEY
+# define MAP_HASH_KEY(key) map__hash(key)
 // (as obliged by Casey) TODO: better hash function
 static uint64_t map__hash(MapKey key)
 {
 	uintptr_t hash = (uintptr_t)key;
-	map__assert(key != Map_Invalid_Key);
 	hash *= 0xff51afd7ed558ccd;
 	hash ^= hash >> 32;
 	return hash;
 }
+#endif//MAP_HASH_KEY
 
 // returns:
 // 1) the index of a key index that may or may not be valid (but will always be within array bounds)
 // 2) ~0 -> no allocation has been made so far, allocate
 static MapIdx map__idx_i(Map *map, MapKey key)
 {
-    map__assert(key != Map_Invalid_Key);
 	MapIdx  idxs_n = Map_Load_Factor * map->max,
-            hash_i = map__hash(key); // this is the index on an infinite-length array if there are no collisions
+            hash_i = MAP_HASH_KEY(key); // this is the index on an infinite-length array if there are no collisions
 	MapKey *keys   = map->keys;
 	MapIdx *idxs   = map->idxs;
 
@@ -185,9 +191,9 @@ static MapIdx map__idx_i(Map *map, MapKey key)
     { // find either the key or the fact that it's not present
 		MapIdx idx_i      = map__mod_pow2(hash_i + i, idxs_n);
 		MapIdx key_i      = idxs[idx_i];
-        int key_is_in_map = ~key_i;
-        if (! key_is_in_map
-            || keys[key_i] == key) // key is found
+        int key_is_not_in_map = ! ~key_i;
+        if (key_is_not_in_map
+            || (MAP_KEY_EQ(keys[key_i], key))) // key is found
         {   return idx_i;   }
         // else there is a different key in this idx, possibly a collision, check the next one
 	}
@@ -270,9 +276,9 @@ MAP_API int map_resize(Map *map, uint64_t values_n)
                idxs_size = idxs_n  * sizeof(MapIdx);
 
         // TODO: consolidate into fewer allocations?
-        new.keys = realloc(old.keys, keys_size);
-        new.vals = realloc(old.vals, vals_size);
-        new.idxs = realloc(old.idxs, idxs_size);
+        new.keys = (MapKey *)realloc((void *)old.keys, keys_size);
+        new.vals = (MapVal *)realloc((void *)old.vals, vals_size);
+        new.idxs = (MapIdx *)realloc((void *)old.idxs, idxs_size);
         if (! (new.keys && new.vals && new.idxs)) { goto end; }
     }
 
@@ -441,7 +447,7 @@ MAP_API MapVal map_remove(Map *map, MapKey key)
 			   check_idx_i = map__mod_pow2(check_idx_i + 1, idxs_n), check_idx = idxs[check_idx_i])
     { // go through all contiguous filled keys following deleted one
         MapKey check_key             = keys[check_idx];
-        MapIdx ideal_idx_i           = map__mod_pow2(map__hash(check_key), idxs_n),
+        MapIdx ideal_idx_i           = map__mod_pow2(MAP_HASH_KEY(check_key), idxs_n),
         // NOTE: adding idxs_n to keep positive, primarily to avoid oddities with mod
                d_from_ideal_to_empty = map__mod_pow2((idxs_n + empty_idx_i - ideal_idx_i), idxs_n),
                d_from_ideal_to_check = map__mod_pow2((idxs_n + check_idx_i - ideal_idx_i), idxs_n);
@@ -542,6 +548,9 @@ static void map__test_invariants(Map *map)
 #if 1 // UNDEFS
 #undef MAP_INVALID_KEY
 #undef MAP_INVALID_VAL
+
+#undef MAP_KEY_EQ
+#undef MAP_HASH_KEY
 
 #undef MAP_TYPE
 #undef MAP_FUNC
