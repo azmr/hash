@@ -5,7 +5,24 @@
  *   - `set` inserts or updates
  *   - `put`?
  *   - `has`
+ *   - `has_val`/`contains`
+ *   - optional assert if insert/update fails
  *   - partial read/update via ptr/index
+ *
+ * - separate type-independent component
+ *   - use UPtr - can be index/id/pointer (already using idxs)
+ *     - or union with void * to have the option of map_get(...).id or map_get(...).ptr
+ *   - allow different types of keys to same underlying data
+ *   - if id is the value, it's then trivial to change id if e.g. resorting (update map)
+ *   - already doing this with idx
+ *   - need approach for removing... e.g. if you want to decrement all ids iterator?
+ *   - allow for resizable or fixed-size arrays
+ *     - out of space -> different responses
+ *       - panic
+ *       - don't add anything new
+ *       - overwrite old components (what?)
+ *         - LRU?
+ *         - cyclical buffer? - least recently added
  *
  * - user definable key equality
  * - multi-part keys
@@ -16,6 +33,32 @@
  * - multithreading without locks (CAS etc)
  *
  * - user-facing fn to add multiple keys/vals at once
+ *
+ * - do simple for loop if n is small enough (e.g. 2 cache-lines worth)
+ *
+ * - multiple parallel value arrays?
+ *
+ * - set-only version
+ *
+ * - New API:
+ *   - based around pointers into an array of keys
+ *   - vals found based on either being in struct with keys or in a parallel array
+ *   - allow for single allocation on resize so that hashing internals append key array (needs to be rehashed anyway)
+ *   - stable pointers (this might be on user side)
+ *   - no extra work/memory for set-only
+ *   - if using struct, may want to find element by multiple different keys
+ *   - layer that only uses hash?
+ *   - looping is done by outer layer
+ *   - hash options:
+ *      - pointer to key + key_size (e.g. fnv1a) (would this need to be a fixed key_size per map or per key?)
+ *      - index + size (U4 + U4) - need base pointer
+ *      - U8/void*
+ *      - char const * to NULL
+ *   - danger of editing key without updating map? - won't get found next time
+ *   - queue/locking/fancy lockless thing for multithread access?
+ *     - Not really intended to be shared too much so locks are probably sufficient
+ *     - May be able to get away with locking only on resize?
+ *   - could you get faster access by SIMDing multiple keys at a time?
  */
 
 #if 1 // MACROS
@@ -101,6 +144,7 @@
 #define map_get    MAP_DECORATE_FUNC(get)
 #define map_set    MAP_DECORATE_FUNC(set)
 #define map_clear  MAP_DECORATE_FUNC(clear)
+#define map_free   MAP_DECORATE_FUNC(free)
 #define map_update MAP_DECORATE_FUNC(update)
 #define map_insert MAP_DECORATE_FUNC(insert)
 #define map_remove MAP_DECORATE_FUNC(remove)
@@ -178,7 +222,7 @@ static uint64_t map__hash(MapKey key)
 // returns:
 // 1) the index of a key index that may or may not be valid (but will always be within array bounds)
 // 2) ~0 -> no allocation has been made so far, allocate
-static MapIdx map__idx_i(Map *map, MapKey key)
+static MapIdx map__idx_i(Map const *map, MapKey key)
 {
 	MapIdx  idxs_n = Map_Load_Factor * map->max,
             hash_i = MAP_HASH_KEY(key); // this is the index on an infinite-length array if there are no collisions
@@ -192,8 +236,8 @@ static MapIdx map__idx_i(Map *map, MapKey key)
 		MapIdx idx_i      = map__mod_pow2(hash_i + i, idxs_n);
 		MapIdx key_i      = idxs[idx_i];
         int key_is_not_in_map = ! ~key_i;
-        if (key_is_not_in_map
-            || (MAP_KEY_EQ(keys[key_i], key))) // key is found
+        if (key_is_not_in_map ||
+            (MAP_KEY_EQ(keys[key_i], key))) // key is found
         {   return idx_i;   }
         // else there is a different key in this idx, possibly a collision, check the next one
 	}
@@ -203,7 +247,7 @@ static MapIdx map__idx_i(Map *map, MapKey key)
 }
 
 // returns key index if found, or ~0 (0xFF...FF) otherwise
-MAP_API MapIdx map__key_i(Map *map, MapKey key)
+MAP_API MapIdx map__key_i(Map const *map, MapKey key)
 {
     map__assert(map);
     MapIdx result = ~(MapIdx)0;
@@ -216,39 +260,39 @@ MAP_API MapIdx map__key_i(Map *map, MapKey key)
     return result;
 }
 
-MAP_API MapVal * map_ptr(Map *map, MapKey key)
+MAP_API MapVal * map_ptr(Map const *map, MapKey key)
 {
     map__assert(map);
-    MAP_LOCK(&map->lock);
+    MAP_LOCK(&((Map *)map)->lock);
 	MapIdx  key_i  = map__key_i(map, key);
 	MapVal *result = (~key_i) ? &map->vals[key_i]
 	                          : 0;
     MAP_TEST_INVARIANTS(map);
-    MAP_UNLOCK(&map->lock);
+    MAP_UNLOCK(&((Map *)map)->lock);
     return result;
 }
 
-MAP_API MapVal map_get(Map *map, MapKey key)
+MAP_API MapVal map_get(Map const *map, MapKey key)
 {
     map__assert(map);
-    MAP_LOCK(&map->lock);
+    MAP_LOCK(&((Map *)map)->lock);
 	MapIdx key_i  = map__key_i(map, key);
 	MapVal result = (~key_i) ? map->vals[key_i]
 	                         : Map_Invalid_Val;
     MAP_TEST_INVARIANTS(map);
-    MAP_UNLOCK(&map->lock);
+    MAP_UNLOCK(&((Map *)map)->lock);
     return result;
 }
 
 // returns non-zero if map contains key
-MAP_API MapResult map_has(Map *map, MapKey key)
+MAP_API MapResult map_has(Map const *map, MapKey key)
 {
     map__assert(map);
-    MAP_LOCK(&map->lock);
+    MAP_LOCK(&((Map *)map)->lock);
 	MapIdx    key_i = map__key_i(map, key);
-    MapResult result = !!(~key_i);
+    MapResult result = (~key_i ? MAP_present : MAP_absent);
     MAP_TEST_INVARIANTS(map);
-    MAP_UNLOCK(&map->lock);
+    MAP_UNLOCK(&((Map *)map)->lock);
 	return result;
 }
 
@@ -257,45 +301,45 @@ MAP_API int map_resize(Map *map, uint64_t values_n)
 {
     map__assert(map);
     MAP_LOCK(&map->lock);
-	int result = 0;
-	Map old    = *map,
-	    new    = old;
+	int result  = 0;
+	Map old_map = *map,
+	    new_map = old_map;
 
     { // ensure appropriate max count
         uint64_t m = values_n ? values_n : MAP_MIN_ELEMENTS; // account for unalloc'd
         --m, m|=m>>1, m|=m>>2, m|=m>>4, m|=m>>8, m|=m>>16, m|=m>>32, ++m; // ceiling pow 2
-        new.max = m;
+        new_map.max = m;
     }
-    size_t idxs_n = new.max * Map_Load_Factor;
+    size_t idxs_n = new_map.max * Map_Load_Factor;
 
-    if (new.max == old.max) { result = 1; goto end; } // no need to resize
+    if (new_map.max == old_map.max) { result = 1; goto end; } // no need to resize
     else
     { // allocate space as necessary
-        size_t keys_size = new.max * sizeof(MapKey),
-               vals_size = new.max * sizeof(MapVal),
+        size_t keys_size = new_map.max * sizeof(MapKey),
+               vals_size = new_map.max * sizeof(MapVal),
                idxs_size = idxs_n  * sizeof(MapIdx);
 
         // TODO: consolidate into fewer allocations?
-        new.keys = (MapKey *)realloc((void *)old.keys, keys_size);
-        new.vals = (MapVal *)realloc((void *)old.vals, vals_size);
-        new.idxs = (MapIdx *)realloc((void *)old.idxs, idxs_size);
-        if (! (new.keys && new.vals && new.idxs)) { goto end; }
+        new_map.keys = (MapKey *)realloc((void *)old_map.keys, keys_size);
+        new_map.vals = (MapVal *)realloc((void *)old_map.vals, vals_size);
+        new_map.idxs = (MapIdx *)realloc((void *)old_map.idxs, idxs_size);
+        if (! (new_map.keys && new_map.vals && new_map.idxs)) { goto end; }
     }
 
     { // set up new indexes
         for(MapIdx i = 0; i < idxs_n; ++i)
-        {   new.idxs[i] = ~(MapIdx)0;   } // invalidate indexes by default // TODO: could memset...
+        {   new_map.idxs[i] = ~(MapIdx)0;   } // invalidate indexes by default // TODO: could memset...
 
-        for(MapIdx i = 0; i < new.n; ++i)
+        for(MapIdx i = 0; i < new_map.n; ++i)
         { // hash key indexes into new slots given new size
-            MapIdx idx_i = map__idx_i(&new, new.keys[i]);
-            map__assert(~new.idxs[idx_i] == 0 && "should be invalid at this stage");
-            new.idxs[idx_i] = i;
+            MapIdx idx_i = map__idx_i(&new_map, new_map.keys[i]);
+            map__assert(~new_map.idxs[idx_i] == 0 && "should be invalid at this stage");
+            new_map.idxs[idx_i] = i;
         }
     }
 
     result = 1;
-	*map = new;
+	*map = new_map;
 
 end:
     MAP_TEST_INVARIANTS(map);
@@ -395,9 +439,9 @@ MAP_API MapResult map_update(Map *map, MapKey key, MapVal val)
  * | - - a - c d e f - x y z - - - - - |
  *	   h i	 j   X
  * |d e f - x y z - - - - -  - - a - c |
- *	j   X					  h i   
+ *	j   X					  h i
  * | - c d e f - x y z - - - - - - - a |
- *   i	 j   X					 h 
+ *   i	 j   X					 h
  *
  * i.e. i is inside the modular interval of [h,j)
  * (if h == j, it's already in the right place and
@@ -405,7 +449,7 @@ MAP_API MapResult map_update(Map *map, MapKey key, MapVal val)
  *
  * Should never get to this:
  * | - a - - c d e f - x y z - - - - - |
- *	 h f i	 j   X   
+ *	 h f i	 j   X
  * ...as e should have linear probed into position f
  */
 MAP_API MapVal map_remove(Map *map, MapKey key)
@@ -479,11 +523,22 @@ MAP_API uint64_t map_clear(Map *map)
 	MapIdx idxs_n = Map_Load_Factor * map->max,
 		   n = map->n;
     map->n = 0;
-	for (MapIdx i = 0; i < idxs_n; ++i)
-	{   map->idxs[i] = ~(MapIdx)0;   }
+    memset(map->idxs, 0xff, idxs_n * sizeof(MapIdx));
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
 	return n;
+}
+
+MAP_API void map_free(Map *map)
+{
+    map__assert(map);
+    MAP_LOCK(&map->lock);
+    if (map->idxs) { free(map->idxs); map->idxs = 0; }
+    if (map->keys) { free(map->keys); map->keys = 0; }
+    if (map->vals) { free(map->vals); map->vals = 0; }
+    map->n = 0;
+    MAP_TEST_INVARIANTS(map);
+    MAP_UNLOCK(&map->lock);
 }
 
 #if 1 // INVARIANTS
@@ -568,7 +623,7 @@ static void map__test_invariants(Map *map)
 #undef MapSlots
 #undef Map_Invalid_Key
 #undef Map_Invalid_Val
- 
+
 #undef MAP_MTX_TYPE
 #undef MAP_MTX_LOCK
 #undef MAP_MTX_UNLOCK
@@ -590,6 +645,7 @@ static void map__test_invariants(Map *map)
 #undef map_get
 #undef map_set
 #undef map_clear
+#undef map_free
 #undef map_update
 #undef map_insert
 #undef map_remove
