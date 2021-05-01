@@ -137,6 +137,7 @@
 #define map__make_room_for   MAP_DECORATE_FUNC(_make_room_for)
 #define map__hashed_entries  MAP_DECORATE_FUNC(_hashed_entries)
 #define map__test_invariants MAP_DECORATE_FUNC(_test_invariants)
+#define map__resize          MAP_DECORATE_FUNC(_resize)
 
 // USER FUNCTIONS:
 #define map_has    MAP_DECORATE_FUNC(has)
@@ -297,10 +298,8 @@ MAP_API MapResult map_has(Map const *map, MapKey key)
 }
 
 // returns non-zero on success
-MAP_API int map_resize(Map *map, uint64_t values_n)
+MAP_API int map__resize(Map *map, uint64_t values_n)
 {
-    map__assert(map);
-    MAP_LOCK(&map->lock);
 	int result  = 0;
 	Map old_map = *map,
 	    new_map = old_map;
@@ -343,6 +342,15 @@ MAP_API int map_resize(Map *map, uint64_t values_n)
 
 end:
     MAP_TEST_INVARIANTS(map);
+    return result;
+}
+
+// returns non-zero on success
+MAP_API inline int map_resize(Map *map, uint64_t values_n)
+{
+    map__assert(map);
+    MAP_LOCK(&map->lock);
+    int result = map__resize(map, values_n);
     MAP_UNLOCK(&map->lock);
     return result;
 }
@@ -366,7 +374,7 @@ static inline MapResult map__make_room_for(Map *map, MapKey key, MapIdx *idx_out
 
         if (idx >= max)
         { // resize and set the index
-            if (! map_resize(map, Map_Load_Factor * max)) { result = MAP_error; goto end; }
+            if (! map__resize(map, Map_Load_Factor * max)) { result = MAP_error; goto end; }
             idx_i = map__idx_i(map, key);
             map__assert(~idx_i);
             map__assert(! ~map->idxs[idx_i]);
@@ -633,6 +641,7 @@ static void map__test_invariants(Map *map)
 #undef MAP_UNLOCK
 #undef MAP_TEST_INVARIANTS
 
+#undef map__resize
 #undef map__hash
 #undef map__slots
 #undef map__hashed_keys
