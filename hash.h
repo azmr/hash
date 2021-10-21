@@ -45,6 +45,8 @@
  *   - vals found based on either being in struct with keys or in a parallel array
  *   - allow for single allocation on resize so that hashing internals append key array (needs to be rehashed anyway)
  *   - stable pointers (this might be on user side)
+ *     - useful setup for things with more complexity than simple hash table is an expandable VMem array, real data
+ *       sits at the beginning, so pointers are stable, then hash table sits afterwards & is moved/expanded when new items added
  *   - no extra work/memory for set-only
  *   - if using struct, may want to find element by multiple different keys
  *   - layer that only uses hash?
@@ -59,6 +61,19 @@
  *     - Not really intended to be shared too much so locks are probably sufficient
  *     - May be able to get away with locking only on resize?
  *   - could you get faster access by SIMDing multiple keys at a time?
+ *     - google's 16-wide 1-byte hash
+ *   - set(map, NULL, val) sets the default returned value when nothing found?
+ *
+ * - not sure if this fits with above API
+ *   - ability to have group under single key
+ *     - hash grouper to find associated link-list; add val to link list
+ *   - locality-sensitive hashing
+ *   - tie-break for equal keys
+ *     = effectively a secondary part of a key
+ *     / alternative to hashing a larger struct when normally the initial key is different
+ *     ? how to tell whether the tie break is needed at callsite
+ *     ! small number of tie-breaks -> iterate
+ *     : can change tie-break without changing position in hash table
  */
 
 #if 1 // MACROS
@@ -544,7 +559,7 @@ MAP_API void map_free(Map *map)
     if (map->idxs) { free(map->idxs); map->idxs = 0; }
     if (map->keys) { free(map->keys); map->keys = 0; }
     if (map->vals) { free(map->vals); map->vals = 0; }
-    map->n = 0;
+    map->n = map->max = 0;
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
 }
