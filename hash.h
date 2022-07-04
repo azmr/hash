@@ -96,6 +96,10 @@
 #define MAP_CAT2(a,b) MAP_CAT1(a,b)
 #define MAP_CAT(a,b)  MAP_CAT2(a,b)
 
+#define MAP_CALL1(a,b) a b
+#define MAP_CALL2(a,b) MAP_CALL1(a,b)
+#define MAP_CALL(a,b)  MAP_CALL2(a,b)
+
 #define MAP_DECORATE_TYPE(x) MAP_CAT(Map, x)
 #define MAP_DECORATE_FUNC(x) MAP_CAT(map_fn, _ ## x)
 
@@ -113,10 +117,10 @@
 #define MAP_KEY( map_t, func_prefix, key_t, val_t) key_t
 #define MAP_VAL( map_t, func_prefix, key_t, val_t) val_t
 
-#define Map    MAP_CAT(MAP_TYPE, MAP_TYPES)
-#define map_fn MAP_CAT(MAP_FUNC, MAP_TYPES)
-#define MapKey MAP_CAT(MAP_KEY,  MAP_TYPES)
-#define MapVal MAP_CAT(MAP_VAL,  MAP_TYPES)
+#define Map    MAP_CALL(MAP_TYPE, MAP_TYPES)
+#define map_fn MAP_CALL(MAP_FUNC, MAP_TYPES)
+#define MapKey MAP_CALL(MAP_KEY,  MAP_TYPES)
+#define MapVal MAP_CALL(MAP_VAL,  MAP_TYPES)
 
 #ifndef MapIdx
 #define MapIdx uint64_t
