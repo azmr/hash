@@ -1,3 +1,8 @@
+// NOTE: outer code may need:
+// #include <stdint.h>
+// #include <stdlib.h>
+// #include <assert.h>
+
 /* TODO
  * - varying semantics based on whether key is already in table
  *   - `insert` succeeds if not already there
@@ -200,9 +205,6 @@ static void map__test_invariants(Map *map);
 static MapKey const Map_Invalid_Key = MAP_INVALID_KEY;
 static MapVal const Map_Invalid_Val = MAP_INVALID_VAL;
 
-#include <stdint.h>
-#include <stdlib.h>
-#include <assert.h>
 
 typedef struct Map {
 	MapIdx *idxs; // TODO: add at end of keys allocation?
