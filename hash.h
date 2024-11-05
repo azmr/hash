@@ -1,3 +1,5 @@
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-function"
 // NOTE: outer code may need:
 // #include <stdint.h>
 // #include <stdlib.h>
@@ -688,3 +690,4 @@ static void map__test_invariants(Map *map)
 #undef MAP_CAT2
 #undef MAP_CAT
 #endif /*undefs*/
+#pragma clang diagnostic pop
