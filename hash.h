@@ -166,16 +166,19 @@
 #define map__resize          MAP_DECORATE_FUNC(_resize)
 
 // USER FUNCTIONS:
-#define map_has    MAP_DECORATE_FUNC(has)
-#define map_ptr    MAP_DECORATE_FUNC(ptr)
-#define map_get    MAP_DECORATE_FUNC(get)
-#define map_set    MAP_DECORATE_FUNC(set)
-#define map_clear  MAP_DECORATE_FUNC(clear)
-#define map_free   MAP_DECORATE_FUNC(free)
-#define map_update MAP_DECORATE_FUNC(update)
-#define map_insert MAP_DECORATE_FUNC(insert)
-#define map_remove MAP_DECORATE_FUNC(remove)
-#define map_resize MAP_DECORATE_FUNC(resize)
+#define map_has      MAP_DECORATE_FUNC(has)
+#define map_ptr      MAP_DECORATE_FUNC(ptr)
+#define map_entry    MAP_DECORATE_FUNC(entry)
+#define map_entry_ex MAP_DECORATE_FUNC(entry_ex)
+#define map_entry_or MAP_DECORATE_FUNC(entry_or)
+#define map_get      MAP_DECORATE_FUNC(get)
+#define map_set      MAP_DECORATE_FUNC(set)
+#define map_clear    MAP_DECORATE_FUNC(clear)
+#define map_free     MAP_DECORATE_FUNC(free)
+#define map_update   MAP_DECORATE_FUNC(update)
+#define map_insert   MAP_DECORATE_FUNC(insert)
+#define map_remove   MAP_DECORATE_FUNC(remove)
+#define map_resize   MAP_DECORATE_FUNC(resize)
 #endif // FUNCTIONS
 
 #ifdef MAP_TEST
@@ -428,6 +431,50 @@ MAP_API MapResult map_set(Map *map, MapKey key, MapVal val)
 
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
+    return result;
+}
+
+// -1 - isn't in map, couldn't allocate sufficient space
+//  0 - wasn't previously in map, successfully inserted
+//  1 - key was already in map, no change made
+// val_out => pointer to pre-existing or newly-created entry
+MAP_API MapResult map_entry_or(Map *map, MapKey key, MapVal default_val, MapVal **val_out)
+{
+    MapVal *val = NULL;
+    MAP_LOCK(&map->lock);
+
+    MapIdx    idx    = 0;
+    MapResult result = map__make_room_for(map, key, &idx);
+    if (result != MAP_error)
+    {
+        val = &map->vals[idx];
+        if (result == MAP_absent)
+        {   *val = default_val;   }
+    }
+
+    MAP_TEST_INVARIANTS(map);
+    MAP_UNLOCK(&map->lock);
+    *val_out = val;
+    return result;
+}
+
+// -1 - isn't in map, couldn't allocate sufficient space
+//  0 - wasn't previously in map, successfully inserted
+//  1 - key was already in map, no change made
+// val_out => pointer to pre-existing or newly-created entry
+MAP_API MapResult map_entry(Map *map, MapKey key, MapVal **val_out)
+{
+    MapVal *val = NULL;
+    MAP_LOCK(&map->lock);
+
+    MapIdx    idx    = 0;
+    MapResult result = map__make_room_for(map, key, &idx);
+    if (result != MAP_error)
+    {   val = &map->vals[idx];   }
+
+    MAP_TEST_INVARIANTS(map);
+    MAP_UNLOCK(&map->lock);
+    *val_out = val;
     return result;
 }
 
