@@ -111,8 +111,6 @@
 #define MAP_DECORATE_FUNC(x) MAP_CAT(map_fn, _ ## x)
 
 #if 1 // USER TYPES
-#define MapEntry MAP_DECORATE_TYPE(Entry)
-#define MapSlots MAP_DECORATE_TYPE(Slots)
 
 #ifndef MAP_KEY_EQ
 # define MAP_KEY_EQ(key_a, key_b) key_a == key_b
@@ -155,7 +153,7 @@
 
 #if 1 // FUNCTIONS
 // INTERNAL FUNCTIONS:
-#define map__hash            MAP_DECORATE_FUNC(_hash)
+#define map__fallback_hash   MAP_DECORATE_FUNC(_fallback_hash)
 #define map__slots           MAP_DECORATE_FUNC(_hashed_slots)
 #define map__hashed_keys     MAP_DECORATE_FUNC(_hashed_keys)
 #define map__idx_i           MAP_DECORATE_FUNC(_idx_i)
@@ -180,13 +178,6 @@
 #define map_remove   MAP_DECORATE_FUNC(remove)
 #define map_resize   MAP_DECORATE_FUNC(resize)
 #endif // FUNCTIONS
-
-#ifdef MAP_TEST
-static void map__test_invariants(Map *map);
-# define MAP_TEST_INVARIANTS(map) map__test_invariants(map);
-#else
-# define MAP_TEST_INVARIANTS(map)
-#endif/*MAP_TEST*/
 
 #if 1 // USER CONSTANTS
 
@@ -234,10 +225,23 @@ typedef enum MapResult {
 #endif // MAP_CONSTANTS
 #endif // CONSTANTS
 
+#ifdef MAP_TEST
+static void map__test_invariants(Map const *map);
+# define MAP_TEST_INVARIANTS(map) map__test_invariants(map);
+#else
+# define MAP_TEST_INVARIANTS(map)
+#endif/*MAP_TEST*/
+
+
 #ifndef MAP_HASH_KEY
-# define MAP_HASH_KEY(key) map__hash(key)
+# define MAP_HASH_KEY(key) MAP_DEFAULT_HASH(key)
+
+# ifndef MAP_DEFAULT_HASH
+#  error uint64_t MAP_DEFAULT_HASH(MapKey key) not defined; #define MAP_DEFAULT_HASH(key) map__fallback_hash(key) if you don't have another in mind
+# endif
+
 // (as obliged by Casey) TODO: better hash function
-static uint64_t map__hash(MapKey key)
+static uint64_t map__fallback_hash(MapKey key)
 {
 	uintptr_t hash = (uintptr_t)key;
 	hash *= 0xff51afd7ed558ccd;
@@ -335,25 +339,24 @@ MAP_API int map__resize(Map *map, uint64_t values_n)
         --m, m|=m>>1, m|=m>>2, m|=m>>4, m|=m>>8, m|=m>>16, m|=m>>32, ++m; // ceiling pow 2
         new_map.max = m;
     }
-    size_t idxs_n = new_map.max * Map_Load_Factor;
-
     if (new_map.max == old_map.max) { result = 1; goto end; } // no need to resize
-    else
+
+    size_t idxs_n    = new_map.max * Map_Load_Factor;
+    size_t idxs_size = idxs_n      * sizeof(MapIdx);
     { // allocate space as necessary
-        size_t keys_size = new_map.max * sizeof(MapKey),
-               vals_size = new_map.max * sizeof(MapVal),
-               idxs_size = idxs_n  * sizeof(MapIdx);
+        size_t keys_size = new_map.max * sizeof(MapKey);
+        size_t vals_size = new_map.max * sizeof(MapVal);
 
         // TODO: consolidate into fewer allocations?
         new_map.keys = (MapKey *)realloc((void *)old_map.keys, keys_size);
         new_map.vals = (MapVal *)realloc((void *)old_map.vals, vals_size);
-        new_map.idxs = (MapIdx *)realloc((void *)old_map.idxs, idxs_size);
+        free(old_map.idxs);
+        new_map.idxs = (MapIdx *)malloc(idxs_size);
         if (! (new_map.keys && new_map.vals && new_map.idxs)) { goto end; }
     }
 
     { // set up new indexes
-        for(MapIdx i = 0; i < idxs_n; ++i)
-        {   new_map.idxs[i] = ~(MapIdx)0;   } // invalidate indexes by default // TODO: could memset...
+        memset(new_map.idxs, 0xff, idxs_size); // invalidate indexes by default
 
         for(MapIdx i = 0; i < new_map.n; ++i)
         { // hash key indexes into new slots given new size
@@ -632,7 +635,7 @@ typedef enum MapInvariant {
 #  define MAP_MAX(a, b) ((a) > (b) ? (a) : (b))
 # endif//MAP_TEST_CONSTANTS
 
-static MapInvariant MAP_DECORATE_FUNC(_inv_idxs_check)(Map *map, void *scratch_mem)
+static MapInvariant MAP_DECORATE_FUNC(_inv_idxs_check)(Map const *map, void *scratch_mem)
 {
     unsigned char *idxs_already_hit = (unsigned char *)scratch_mem;
     MapIdx idxs_n = Map_Load_Factor * map->max;
@@ -641,7 +644,7 @@ static MapInvariant MAP_DECORATE_FUNC(_inv_idxs_check)(Map *map, void *scratch_m
         MapIdx idx = map->idxs[i];
         if (~idx)
         {
-            if (idx >= n)
+            if (idx >= map->n)
             {   return MAP_INV_index_invalid_or_less_than_max;   }
 
             else if (idxs_already_hit[idx]++)
@@ -652,7 +655,7 @@ static MapInvariant MAP_DECORATE_FUNC(_inv_idxs_check)(Map *map, void *scratch_m
     return MAP_INV_no_errors;
 }
 
-static void map__test_invariants(Map *map)
+static void map__test_invariants(Map const *map)
 {
     MapIdx idxs_size = sizeof(MapIdx) * Map_Load_Factor * map->max,
            vals_size = sizeof(MapVal) * map->n,
@@ -661,14 +664,12 @@ static void map__test_invariants(Map *map)
 
     void *scratch_mem = malloc(max_size);
 
-    void (*map__invariants)(Map *map)[] = {
-        MAP_DECORATE_FUNC(_inv_idxs_check),
-    };
-
-    for (size_t i = 0; i < sizeof(map__invariants)/sizeof(*map__invariants); ++i)
+    // MapInvariant (*map__invariants)(Map *map)[] = { MAP_DECORATE_FUNC(_inv_idxs_check), };
+    // for (size_t i = 0; i < sizeof(map__invariants)/sizeof(*map__invariants); ++i)
     {
         memset(scratch_mem, 0, max_size);
-        MapInvariant err = map__invariants[i](map, scratch_mem);
+        // MapInvariant err = map__invariants[i](map, scratch_mem);
+        MapInvariant err = MAP_DECORATE_FUNC(_inv_idxs_check)(map, scratch_mem);
         map__assert(! err && "Invariant violated");
     }
 
@@ -697,8 +698,6 @@ static void map__test_invariants(Map *map)
 #undef MAP_DECORATE_TYPE
 #undef MAP_DECORATE_FUNC
 
-#undef MapEntry
-#undef MapSlots
 #undef Map_Invalid_Key
 #undef Map_Invalid_Val
 
@@ -712,7 +711,7 @@ static void map__test_invariants(Map *map)
 #undef MAP_TEST_INVARIANTS
 
 #undef map__resize
-#undef map__hash
+#undef map__fallback_hash
 #undef map__slots
 #undef map__hashed_keys
 #undef map__key_i

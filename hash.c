@@ -1,9 +1,16 @@
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+#define MAP_DEFAULT_HASH(key) map__fallback_hash(key)
+#define MAP_TEST
 #define MAP_TYPES (MyMap, map, void *, void *)
 #include "hash.h"
 #define MAP_INVALID_VAL -1
 #define MAP_TYPES (MapStrInt, map_s_i, char *, int)
 #include "hash.h"
- 
+
 #include <stdio.h>
 
 void put_str(char *s)
@@ -41,11 +48,11 @@ int main()
 		for(int i = 0; i < map.n; ++i) {
 			char *name = map.keys[i];
 			int  *age  = map_get(&map, name); // bug in code if this is null
-			snprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, *age);
+			snprintf(buf, sizeof buf, "%d. %s is %d years old\n", i, name, *age);
 			put_str(buf);
 		}
 	}
-	
+
 	{ // use type-safe map
 		char buf[256] = {0};
 		MapStrInt map = {0};
@@ -74,7 +81,7 @@ int main()
 		for(int i = 0; i < map.n; ++i) {
 			char *name = map.keys[i];
 			int  age  = map_s_i_get(&map, name); // bug in code if this is null
-			snprintf(buf, sizeof buf, "%d. %s is %d years old", i, name, age);
+			snprintf(buf, sizeof buf, "%d. %s is %d years old\n", i, name, age);
 			put_str(buf);
 		}
 	}
