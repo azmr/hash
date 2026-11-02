@@ -84,8 +84,8 @@
  */
 
 #if 1 // MACROS
-#if !defined(MAP_TYPES)
-# error map, key and value types must be defined: #define MAP_TYPES (map_type_name, function_prefix, key_type, value_type)
+#if !(defined(SET_TYPES) || defined(MAP_TYPES))
+# error map, key and value types must be defined: #define MAP_TYPES (map_type_name, function_prefix, key_type, value_type) or #define SET_TYPES (map_type_name, function_prefix, key_type)
 #endif
 
 #ifndef  MAP_API
@@ -117,15 +117,32 @@
 #endif//MAP_KEY_EQ
 
 #if 1 // BASIC TYPES
-#define MAP_TYPE(map_t, func_prefix, key_t, val_t) map_t
-#define MAP_FUNC(map_t, func_prefix, key_t, val_t) func_prefix
-#define MAP_KEY( map_t, func_prefix, key_t, val_t) key_t
+#define MAP_TYPE(map_t, func_prefix, key_t, ...) map_t
+#define MAP_FUNC(map_t, func_prefix, key_t, ...) func_prefix
+#define MAP_KEY( map_t, func_prefix, key_t, ...) key_t
 #define MAP_VAL( map_t, func_prefix, key_t, val_t) val_t
+
+#ifdef SET_TYPES
+# define MAP_SET 1
+# define MapSlot MapKey
+# define map__slot(map, idx) (&(map)->keys[idx])
+# define Map_Invalid_Slot Map_Invalid_Key
+# ifdef MAP_TYPES
+#  error can't define both MAP_TYPES and SET_TYPES. Choose one.
+# endif
+# define MAP_TYPES SET_TYPES
+#else
+# define MAP_SET 0
+# define MapSlot MapVal
+# define map__slot(map, idx) (&(map)->vals[idx])
+# define Map_Invalid_Slot Map_Invalid_Val
+
+# define MapVal MAP_CALL(MAP_VAL,  MAP_TYPES)
+#endif
 
 #define Map    MAP_CALL(MAP_TYPE, MAP_TYPES)
 #define map_fn MAP_CALL(MAP_FUNC, MAP_TYPES)
 #define MapKey MAP_CALL(MAP_KEY,  MAP_TYPES)
-#define MapVal MAP_CALL(MAP_VAL,  MAP_TYPES)
 
 #ifndef MapIdx
 #define MapIdx uint64_t
@@ -154,29 +171,25 @@
 #if 1 // FUNCTIONS
 // INTERNAL FUNCTIONS:
 #define map__fallback_hash   MAP_DECORATE_FUNC(_fallback_hash)
-#define map__slots           MAP_DECORATE_FUNC(_hashed_slots)
-#define map__hashed_keys     MAP_DECORATE_FUNC(_hashed_keys)
 #define map__idx_i           MAP_DECORATE_FUNC(_idx_i)
 #define map__key_i           MAP_DECORATE_FUNC(_key_i)
 #define map__make_room_for   MAP_DECORATE_FUNC(_make_room_for)
-#define map__hashed_entries  MAP_DECORATE_FUNC(_hashed_entries)
-#define map__test_invariants MAP_DECORATE_FUNC(_test_invariants)
 #define map__resize          MAP_DECORATE_FUNC(_resize)
+#define map__test_invariants MAP_DECORATE_FUNC(_test_invariants)
 
 // USER FUNCTIONS:
-#define map_has      MAP_DECORATE_FUNC(has)
-#define map_ptr      MAP_DECORATE_FUNC(ptr)
-#define map_entry    MAP_DECORATE_FUNC(entry)
-#define map_entry_ex MAP_DECORATE_FUNC(entry_ex)
-#define map_entry_or MAP_DECORATE_FUNC(entry_or)
-#define map_get      MAP_DECORATE_FUNC(get)
-#define map_set      MAP_DECORATE_FUNC(set)
 #define map_clear    MAP_DECORATE_FUNC(clear)
+#define map_entry    MAP_DECORATE_FUNC(entry)
+#define map_entry_or MAP_DECORATE_FUNC(entry_or)
 #define map_free     MAP_DECORATE_FUNC(free)
-#define map_update   MAP_DECORATE_FUNC(update)
+#define map_get      MAP_DECORATE_FUNC(get)
+#define map_has      MAP_DECORATE_FUNC(has)
 #define map_insert   MAP_DECORATE_FUNC(insert)
+#define map_ptr      MAP_DECORATE_FUNC(ptr)
 #define map_remove   MAP_DECORATE_FUNC(remove)
 #define map_resize   MAP_DECORATE_FUNC(resize)
+#define map_set      MAP_DECORATE_FUNC(set)
+#define map_update   MAP_DECORATE_FUNC(update)
 #endif // FUNCTIONS
 
 #if 1 // USER CONSTANTS
@@ -194,17 +207,21 @@
 #endif /*MAP_INVALID_KEY*/
 
 #define Map_Invalid_Key MAP_DECORATE_TYPE(_Invalid_Key)
-#define Map_Invalid_Val MAP_DECORATE_TYPE(_Invalid_Val)
+# define Map_Invalid_Val MAP_DECORATE_TYPE(_Invalid_Val)
 #endif // USER CONSTANTS
 #endif // MACROS
 
 static MapKey const Map_Invalid_Key = MAP_INVALID_KEY;
+#if !MAP_SET
 static MapVal const Map_Invalid_Val = MAP_INVALID_VAL;
+#endif
 
 
 typedef struct Map {
 	MapIdx *idxs; // TODO: add at end of keys allocation?
+#if ! MAP_SET
 	MapVal *vals;
+#endif
 	MapKey *keys;
 	size_t  max; // always a power of 2; the size of the array is 2x this (allows super-quick mod_pow2)
 	size_t  n;
@@ -291,25 +308,23 @@ MAP_API MapIdx map__key_i(Map const *map, MapKey key)
     return result;
 }
 
-MAP_API MapVal * map_ptr(Map const *map, MapKey key)
+MAP_API MapSlot * map_ptr(Map const *map, MapKey key)
 {
     map__assert(map);
     MAP_LOCK(&((Map *)map)->lock);
-	MapIdx  key_i  = map__key_i(map, key);
-	MapVal *result = (~key_i) ? &map->vals[key_i]
-	                          : 0;
+	MapIdx   key_i  = map__key_i(map, key);
+	MapSlot *result = (~key_i ? map__slot(map, key_i) : 0);
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&((Map *)map)->lock);
     return result;
 }
 
-MAP_API MapVal map_get(Map const *map, MapKey key)
+MAP_API MapSlot map_get(Map const *map, MapKey key)
 {
     map__assert(map);
     MAP_LOCK(&((Map *)map)->lock);
-	MapIdx key_i  = map__key_i(map, key);
-	MapVal result = (~key_i) ? map->vals[key_i]
-	                         : Map_Invalid_Val;
+	MapIdx  key_i  = map__key_i(map, key);
+	MapSlot result = (~key_i ? *map__slot(map, key_i) : Map_Invalid_Slot);
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&((Map *)map)->lock);
     return result;
@@ -320,7 +335,7 @@ MAP_API MapResult map_has(Map const *map, MapKey key)
 {
     map__assert(map);
     MAP_LOCK(&((Map *)map)->lock);
-	MapIdx    key_i = map__key_i(map, key);
+	MapIdx    key_i  = map__key_i(map, key);
     MapResult result = (~key_i ? MAP_present : MAP_absent);
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&((Map *)map)->lock);
@@ -344,15 +359,16 @@ MAP_API int map__resize(Map *map, uint64_t values_n)
     size_t idxs_n    = new_map.max * Map_Load_Factor;
     size_t idxs_size = idxs_n      * sizeof(MapIdx);
     { // allocate space as necessary
-        size_t keys_size = new_map.max * sizeof(MapKey);
-        size_t vals_size = new_map.max * sizeof(MapVal);
-
         // TODO: consolidate into fewer allocations?
-        new_map.keys = (MapKey *)realloc((void *)old_map.keys, keys_size);
-        new_map.vals = (MapVal *)realloc((void *)old_map.vals, vals_size);
+        new_map.keys = (MapKey *)realloc((void *)old_map.keys, new_map.max * sizeof(MapKey));
+        int vals_ok = 1;
+#if ! MAP_SET
+        new_map.vals = (MapVal *)realloc((void *)old_map.vals, new_map.max * sizeof(MapVal));
+        vals_ok      = !!new_map.vals;
+#endif
         free(old_map.idxs);
         new_map.idxs = (MapIdx *)malloc(idxs_size);
-        if (! (new_map.keys && new_map.vals && new_map.idxs)) { goto end; }
+        if (! (new_map.keys && vals_ok && new_map.idxs)) { goto end; }
     }
 
     { // set up new indexes
@@ -360,7 +376,7 @@ MAP_API int map__resize(Map *map, uint64_t values_n)
 
         for(MapIdx i = 0; i < new_map.n; ++i)
         { // hash key indexes into new slots given new size
-            MapIdx idx_i = map__idx_i(&new_map, new_map.keys[i]);
+            MapIdx idx_i = map__idx_i(&new_map, new_map.keys[i]); // TODO: this does more work than needed
             map__assert(~new_map.idxs[idx_i] == 0 && "should be invalid at this stage");
             new_map.idxs[idx_i] = i;
         }
@@ -419,6 +435,7 @@ end:
     return result;
 }
 
+#if ! MAP_SET
 // returns:
 // -1 - isn't in map, couldn't allocate sufficient space
 //  0 - wasn't previously in map, successfully inserted
@@ -460,44 +477,52 @@ MAP_API MapResult map_entry_or(Map *map, MapKey key, MapVal default_val, MapVal 
     *val_out = val;
     return result;
 }
+#endif
 
 // -1 - isn't in map, couldn't allocate sufficient space
 //  0 - wasn't previously in map, successfully inserted
 //  1 - key was already in map, no change made
-// val_out => pointer to pre-existing or newly-created entry
-MAP_API MapResult map_entry(Map *map, MapKey key, MapVal **val_out)
+// slot_out => pointer to pre-existing or newly-created entry
+MAP_API MapResult map_entry(Map *map, MapKey key, MapSlot **slot_out)
 {
-    MapVal *val = NULL;
+    MapSlot *slot = NULL;
     MAP_LOCK(&map->lock);
 
     MapIdx    idx    = 0;
     MapResult result = map__make_room_for(map, key, &idx);
     if (result != MAP_error)
-    {   val = &map->vals[idx];   }
+    {   slot = map__slot(map, idx);   }
 
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
-    *val_out = val;
+    *slot_out = slot;
     return result;
 }
 
 // -1 - isn't in map, couldn't allocate sufficient space
 //  0 - wasn't previously in map, successfully inserted
 //  1 - key was already in map, no change made
+#if MAP_SET
+MAP_API MapResult map_insert(Map *map, MapKey key)
+#else
 MAP_API MapResult map_insert(Map *map, MapKey key, MapVal val)
+#endif
 {
     MAP_LOCK(&map->lock);
 
     MapIdx idx = 0;
     MapResult result = map__make_room_for(map, key, &idx);
+#if ! MAP_SET
     if (result == MAP_absent)
     {   map->vals[idx] = val;   }
+#endif
 
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
     return result;
 }
 
+#if ! MAP_SET
 //  MAP_absent  (0) - isn't in map, no change
 //  MAP_present (1) - was already in map, successfully updated
 MAP_API MapResult map_update(Map *map, MapKey key, MapVal val)
@@ -515,6 +540,7 @@ MAP_API MapResult map_update(Map *map, MapKey key, MapVal val)
     MAP_UNLOCK(&map->lock);
     return result;
 }
+#endif
 
 /* Valid layouts for rearranging:
  * | - - a - c d e f - x y z - - - - - |
@@ -533,7 +559,7 @@ MAP_API MapResult map_update(Map *map, MapKey key, MapVal val)
  *	 h f i	 j   X
  * ...as e should have linear probed into position f
  */
-MAP_API MapVal map_remove(Map *map, MapKey key)
+MAP_API MapSlot map_remove(Map *map, MapKey key)
 {
     MAP_LOCK(&map->lock);
     map__assert(map);
@@ -541,15 +567,14 @@ MAP_API MapVal map_remove(Map *map, MapKey key)
 	MapIdx  idxs_n = Map_Load_Factor * max;
 	MapIdx *idxs   = map->idxs;
 	MapKey *keys   = map->keys;
-	MapVal *vals   = map->vals;
-	MapVal  result = Map_Invalid_Val;
+	MapSlot result = Map_Invalid_Slot;
 
 	MapIdx empty_idx_i = map__idx_i(map, key),
 	       rm_idx      = (~empty_idx_i) ? idxs[empty_idx_i] // possibly valid idx
 	                                    : ~(MapIdx)0;       // map currently unallocated
 
 	if (! (~rm_idx)) { goto end; } // key is not in map, nothing to remove
-	result = vals[rm_idx];
+	result = *map__slot(map, rm_idx);
 
     { // end-swap key/value and update indices
         MapIdx end_i    = --map->n;
@@ -562,8 +587,8 @@ MAP_API MapVal map_remove(Map *map, MapKey key)
             /* idxs[map__idx_i(map, swap_key)] = rm_idx; // update index for swappee*/
         }
 
-        keys[rm_idx]    = swap_key;    // overwrite deleted key with key from end
-        vals[rm_idx]    = vals[end_i]; // overwrite deleted val with val from end
+        keys[rm_idx]            = swap_key;               // overwrite deleted key with key from end
+        *map__slot(map, rm_idx) = *map__slot(map, end_i); // overwrite deleted val with val from end
     }
 
     // move back elements to make sure they're valid for linear-probing
@@ -616,7 +641,9 @@ MAP_API void map_free(Map *map)
     MAP_LOCK(&map->lock);
     if (map->idxs) { free(map->idxs); map->idxs = 0; }
     if (map->keys) { free(map->keys); map->keys = 0; }
+#if ! MAP_SET
     if (map->vals) { free(map->vals); map->vals = 0; }
+#endif
     map->n = map->max = 0;
     MAP_TEST_INVARIANTS(map);
     MAP_UNLOCK(&map->lock);
@@ -658,7 +685,11 @@ static MapInvariant MAP_DECORATE_FUNC(_inv_idxs_check)(Map const *map, void *scr
 static void map__test_invariants(Map const *map)
 {
     MapIdx idxs_size = sizeof(MapIdx) * Map_Load_Factor * map->max,
+#if MAP_SET
+           vals_size = 0,
+#else
            vals_size = sizeof(MapVal) * map->n,
+#endif
            keys_size = sizeof(MapKey) * map->n,
            max_size  = MAP_MAX(MAP_MAX(idxs_size, vals_size), keys_size);
 
@@ -695,11 +726,13 @@ static void map__test_invariants(Map const *map)
 #undef map_fn
 #undef MapKey
 #undef MapVal
+#undef MapSlot
 #undef MAP_DECORATE_TYPE
 #undef MAP_DECORATE_FUNC
 
 #undef Map_Invalid_Key
 #undef Map_Invalid_Val
+#undef Map_Invalid_Slot
 
 #undef MAP_MTX_TYPE
 #undef MAP_MTX_LOCK
@@ -710,25 +743,30 @@ static void map__test_invariants(Map const *map)
 #undef MAP_UNLOCK
 #undef MAP_TEST_INVARIANTS
 
-#undef map__resize
 #undef map__fallback_hash
-#undef map__slots
-#undef map__hashed_keys
+#undef map__idx_i
 #undef map__key_i
-#undef map__hashed_entries
+#undef map__make_room_for
+#undef map__resize
+#undef map__slot
 #undef map__test_invariants
 
 // USER FUNCTIONS:
-#undef map_has
-#undef map_get
-#undef map_set
 #undef map_clear
+#undef map_entry
+#undef map_entry_or
 #undef map_free
-#undef map_update
+#undef map_get
+#undef map_has
 #undef map_insert
+#undef map_ptr
 #undef map_remove
 #undef map_resize
+#undef map_set
+#undef map_update
 
+#undef SET_TYPES
+#undef MAP_SET
 #undef MAP_TYPES
 #undef MAP_MUTEX
 

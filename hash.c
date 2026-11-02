@@ -11,6 +11,26 @@
 #define MAP_TYPES (MapStrInt, map_s_i, char *, int)
 #include "hash.h"
 
+static inline uint64_t
+fnv1a_cstr(char const *string)
+{
+    uint64_t hash = 0xcbf29ce484222325;
+    for(char byte = *string; byte; byte = *(++string))
+    {
+        hash ^= byte;
+        hash *= 0x100000001b3;
+    }
+    return hash;
+}
+
+#define SET_TYPES (SetStrPtr, set_str_ptr, char *)
+#include "hash.h"
+
+#define MAP_HASH_KEY(key) fnv1a_cstr(key)
+#define MAP_KEY_EQ(a,b) (!strcmp(a,b))
+#define SET_TYPES (SetStr, set_str, char *)
+#include "hash.h"
+
 #include <stdio.h>
 
 void put_str(char *s)
@@ -85,6 +105,79 @@ int main()
 			put_str(buf);
 		}
 	}
+
+
+    { // use type-safe set
+        char buf[256] = {0};
+        SetStrPtr map = {0};
+
+        char *names[] = {"Andrew", "Patrick", "Jon", "Liz"};
+        set_str_ptr_insert(&map, names[0]);
+        set_str_ptr_insert(&map, names[1]);
+        set_str_ptr_insert(&map, names[2]);
+        set_str_ptr_insert(&map, names[2]);
+        set_str_ptr_insert(&map, names[3]);
+
+        char *not_my_age = set_str_ptr_get(&map, "Someone else");
+        if (not_my_age != NULL) {
+            fprintf(stderr, "should not be valid");
+        }
+        char *my_age = set_str_ptr_get(&map, names[0]);
+        if (my_age != NULL) {
+            snprintf(buf, sizeof buf, "age: %s\n", my_age);
+            put_str(buf);
+        }
+
+        char different_buf_same_name[] = "Andrew";
+        snprintf(buf, sizeof buf, "First name: %s, different buf: %s\n", different_buf_same_name, set_str_ptr_get(&map, different_buf_same_name));
+        put_str(buf);
+
+        snprintf(buf, sizeof buf, "First name: %s, again: %s\n", names[0], set_str_ptr_remove(&map, names[0]));
+        put_str(buf);
+
+        for(int i = 0; i < map.n; ++i) {
+            char *name  = map.keys[i];
+            char *again = set_str_ptr_get(&map, name); // bug in code if this is null
+            snprintf(buf, sizeof buf, "%d. %s is %s years old\n", i, name, again);
+            put_str(buf);
+        }
+    }
+
+    { // use type-safe set
+        char buf[256] = {0};
+        SetStr map = {0};
+
+        char *names[] = {"Andrew", "Patrick", "Jon", "Liz"};
+        set_str_insert(&map, names[0]);
+        set_str_insert(&map, names[1]);
+        set_str_insert(&map, names[2]);
+        set_str_insert(&map, names[2]);
+        set_str_insert(&map, names[3]);
+
+        char *not_my_age = set_str_get(&map, "Someone else");
+        if (not_my_age != NULL) {
+            fprintf(stderr, "should not be valid");
+        }
+        char *my_age = set_str_get(&map, names[0]);
+        if (my_age != NULL) {
+            snprintf(buf, sizeof buf, "age: %s\n", my_age);
+            put_str(buf);
+        }
+
+        char different_buf_same_name[] = "Andrew";
+        snprintf(buf, sizeof buf, "First name: %s, different buf: %s\n", different_buf_same_name, set_str_get(&map, different_buf_same_name));
+        put_str(buf);
+
+        snprintf(buf, sizeof buf, "First name: %s, again: %s\n", names[0], set_str_remove(&map, names[0]));
+        put_str(buf);
+
+        for(int i = 0; i < map.n; ++i) {
+            char *name  = map.keys[i];
+            char *again = set_str_get(&map, name); // bug in code if this is null
+            snprintf(buf, sizeof buf, "%d. %s is %s years old\n", i, name, again);
+            put_str(buf);
+        }
+    }
 
 	return 0;
 }
